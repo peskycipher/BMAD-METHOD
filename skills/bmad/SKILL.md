@@ -100,6 +100,15 @@ first consider using it. The script reports a status; on anything but a clean
 "ok", continue silently with ordinary reasoning — never tell the user about a
 disabled or failed provider, and never retry.
 
+Two further scripts share the same opt-in configuration and advisory
+doctrine, for use by other BMad skills rather than the help flow:
+`jev_readiness.py` (phase-transition artifact gate — read the artifact from
+a file and pass `--transition`) and `jev_review.py` (post-implementation
+story review — pass `--story-file` and `--implementation-file`). Prefer
+`shadow` mode for the readiness gate until its calibration set grows; see
+`references/jev-decisions.md` for thresholds, calibration provenance, and
+usage.
+
 - **Workflow recommendation.** Only when the user's request, your
   knowledge-document routing, and the conversation leave two or more
   installed candidates genuinely plausible and the user has not chosen one:

@@ -7,23 +7,50 @@ calls and the help flow behaves exactly as before.
 
 ## What it is
 
-One narrow, bounded judgment is wired into the help flow:
+Three narrow, bounded judgments are wired in:
 
-- **Workflow recommendation** (`jev_recommend.py`) — when the ordinary
-  knowledge-document routing leaves several installed skills genuinely
-  plausible, Jev picks among the candidate ids the help flow itself derived.
-  Explicit user choices and single-candidate cases never reach the provider.
+- **Workflow recommendation** (`jev_recommend.py`, help flow) — when the
+  ordinary knowledge-document routing leaves several installed skills
+  genuinely plausible, Jev picks among the candidate ids the help flow
+  itself derived. Explicit user choices and single-candidate cases never
+  reach the provider.
+- **Readiness gate** (`jev_readiness.py`) — before a BMad phase transition,
+  judges whether the upstream artifact is ready (concrete requirements,
+  testable criteria, no explicit unresolved blockers) and names the primary
+  blocker when not.
+- **Story review** (`jev_review.py`) — after an implementation, judges a
+  story/implementation pair against a bounded rubric: three noul gates
+  (spec satisfied / no regression / no security violation), four scored
+  dimensions on a 2-10 scale, and a failure taxonomy on rework.
 
 Everything is advisory. Script results never override an explicit user
 instruction, a knowledge-document route, or an existing approval checkpoint.
+A `proceed`/`first_pass` verdict is one vote, never an approval; a
+`hold`/`rework` verdict is a signal to surface the recorded reasons in the
+calling skill's own flow, never an automatic block or rejection.
+
+### Gate and review calibration
+
+Readiness and review thresholds are fitted, not aspirational: calibrated on
+2026-09-19 against the jev-BMAD golden sets (302 labeled examples; readiness
+n=8, story review n=10) on the pinned model. Current fitted values live in
+`jev_gates.py` (readiness: spec ≥ 0.40, testable ≥ 0.45, blockers ≥ 0.55,
+score ≥ 3.0; review: spec ≥ 0.75, no-regression ≥ 0.65, security ≥ 0.85,
+every dimension ≥ 5.0 on the 2-10 scale). Story review measured 100%
+verdict accuracy on its held-out set. The readiness set is small and its
+score question shows near-boundary run-to-run variance (MAE ~0.46 levels),
+so a solid artifact can occasionally draw a conservative `hold` — run the
+readiness gate in `shadow` mode until its calibration set grows past 100
+examples. Re-fit all thresholds when the pinned model changes.
 
 ### Deliberately out of scope
 
-This pilot intentionally does **not** touch planning, readiness gates,
-context filtering, code review, or autonomous workflow execution, and does
-not add a second decision point (such as clarification triage). Those remain
-possible future work and would need their own scoped design, evaluation, and
-compatibility review.
+Still deliberately out of scope: planning, context filtering, and
+autonomous workflow execution. Readiness gates and story review were
+originally listed here; both have since been added as advisory decision
+points with their own evaluation data (see above). A second help-flow
+decision point (such as clarification triage) also remains future work and
+would need its own scoped design, evaluation, and compatibility review.
 
 ## Roles and models
 
@@ -38,10 +65,10 @@ compatibility review.
   needed.
 - The adapter validates all three Jev answer primitives — `noul` (yes/no
   probability), `choice` (option pick with distribution), and `score`
-  (ordered rubric position with distribution and confidence). The wired
-  workflow currently uses only `choice`; the other two are available to
-  future decision points and rejected nowhere (a question of an unsupported
-  type still yields an explicit `unavailable` outcome).
+  (ordered rubric position with distribution and confidence). All three are
+  now exercised by wired decision points: `choice` by the workflow
+  recommendation, `noul` and `score` by the readiness gate and story review
+  (plus `choice` failure taxonomies in both).
 
 ## Modes and enabling
 
