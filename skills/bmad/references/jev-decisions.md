@@ -36,6 +36,12 @@ compatibility review.
   `OPENROUTER_API_KEY` environment variable. No TypeSafe-direct endpoint
   (`api.typesafe.ai`) is ever contacted and no separate TypeSafe key is
   needed.
+- The adapter validates all three Jev answer primitives — `noul` (yes/no
+  probability), `choice` (option pick with distribution), and `score`
+  (ordered rubric position with distribution and confidence). The wired
+  workflow currently uses only `choice`; the other two are available to
+  future decision points and rejected nowhere (a question of an unsupported
+  type still yields an explicit `unavailable` outcome).
 
 ## Modes and enabling
 

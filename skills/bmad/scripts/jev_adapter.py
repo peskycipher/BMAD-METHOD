@@ -232,6 +232,61 @@ def _validate_answers(questions: dict[str, dict[str, Any]], answers: Any) -> tup
                 "probabilities": {k: float(v) for k, v in probabilities.items()},
                 "confidence": float(confidence),
             }
+        elif expected_type == "noul":
+            noul = answer.get("noul")
+            if not isinstance(noul, (int, float)) or isinstance(noul, bool) or not 0.0 <= noul <= 1.0:
+                return {}, f"answer `{question_id}` noul probability out of range or missing"
+            validated[question_id] = {"type": "noul", "noul": float(noul)}
+        elif expected_type == "score":
+            criteria = question.get("criteria")
+            if (
+                not isinstance(criteria, list)
+                or len(criteria) < 2
+                or not all(isinstance(entry, str) for entry in criteria)
+            ):
+                return {}, f"question `{question_id}` score criteria must be a list of at least 2 strings"
+            score = answer.get("score")
+            if (
+                not isinstance(score, (int, float))
+                or isinstance(score, bool)
+                or not 0.0 <= score <= len(criteria) - 1
+            ):
+                return {}, f"answer `{question_id}` score out of range or missing"
+            probabilities = answer.get("probabilities")
+            if not isinstance(probabilities, dict) or not probabilities:
+                return {}, f"answer `{question_id}` probabilities missing"
+            total = 0.0
+            for option, probability in probabilities.items():
+                if not isinstance(option, str) or not option.isdigit() or int(option) >= len(criteria):
+                    return {}, f"answer `{question_id}` probabilities name a non-supplied rubric level"
+                if (
+                    not isinstance(probability, (int, float))
+                    or isinstance(probability, bool)
+                    or not 0.0 <= probability <= 1.0
+                ):
+                    return {}, f"answer `{question_id}` probability out of range"
+                total += float(probability)
+            if abs(total - 1.0) > 0.05:
+                return {}, f"answer `{question_id}` probabilities do not sum to 1"
+            confidence = answer.get("confidence")
+            if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0.0 <= confidence <= 1.0:
+                return {}, f"answer `{question_id}` confidence out of range or missing"
+            legend = answer.get("legend")
+            if legend is not None:
+                if not isinstance(legend, dict) or any(
+                    not isinstance(key, str)
+                    or not key.isdigit()
+                    or int(key) >= len(criteria)
+                    or legend.get(key) != criteria[int(key)]
+                    for key in legend
+                ):
+                    return {}, f"answer `{question_id}` legend does not match the supplied rubric"
+            validated[question_id] = {
+                "type": "score",
+                "score": float(score),
+                "probabilities": {k: float(v) for k, v in probabilities.items()},
+                "confidence": float(confidence),
+            }
         else:
             return {}, f"question `{question_id}` has unsupported type {expected_type!r}"
     return validated, None

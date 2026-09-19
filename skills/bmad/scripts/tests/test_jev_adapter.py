@@ -183,7 +183,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_answer_type_mismatch_is_unavailable(self):
         answers = dict(GOOD_ANSWERS)
-        answers["pick"] = {"type": "noul", "noul": 0.5}
+        answers["pick"] = {"type": "score", "score": 1.5}
         spy = SpyTransport([(200, envelope(answers))])
         client = JevClient(make_settings(), transport=spy)
         result = client.post_decision(operation="op", state="state", questions=QUESTIONS)
@@ -191,12 +191,119 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("type", result.reason)
 
     def test_unsupported_question_type_is_unavailable(self):
-        questions = {"flag": {"type": "noul", "instructions": "yes or no"}}
-        spy = SpyTransport([(200, envelope({"flag": {"type": "noul", "noul": 0.9}}))])
+        questions = {"flag": {"type": "freeform", "instructions": "say something"}}
+        spy = SpyTransport([(200, envelope({"flag": {"type": "freeform", "text": "hi"}}))])
         client = JevClient(make_settings(), transport=spy)
         result = client.post_decision(operation="op", state="state", questions=questions)
         self.assertEqual(result.status, "unavailable")
         self.assertIn("unsupported type", result.reason)
+
+    def test_noul_answer_is_ok(self):
+        questions = {
+            "is_urgent": {
+                "type": "noul",
+                "instructions": "Does this convey urgency?",
+                "criteria": {"false": "No urgency", "true": "Time-sensitive"},
+            }
+        }
+        answers = {"is_urgent": {"type": "noul", "noul": 0.96}}
+        spy = SpyTransport([(200, envelope(answers))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=questions)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.answers["is_urgent"], {"type": "noul", "noul": 0.96})
+
+    def test_noul_out_of_range_is_unavailable(self):
+        questions = {
+            "is_urgent": {"type": "noul", "instructions": "urgent?", "criteria": {"false": "no", "true": "yes"}}
+        }
+        answers = {"is_urgent": {"type": "noul", "noul": 1.5}}
+        spy = SpyTransport([(200, envelope(answers))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=questions)
+        self.assertEqual(result.status, "unavailable")
+        self.assertIn("noul probability", result.reason)
+
+    def test_score_answer_is_ok(self):
+        questions = {
+            "urgency": {
+                "type": "score",
+                "instructions": "How urgent?",
+                "criteria": ["low", "mid", "high"],
+            }
+        }
+        answers = {
+            "urgency": {
+                "type": "score",
+                "score": 1.99,
+                "confidence": 0.99,
+                "legend": {"0": "low", "1": "mid", "2": "high"},
+                "probabilities": {"0": 0.0, "1": 0.01, "2": 0.99},
+            }
+        }
+        spy = SpyTransport([(200, envelope(answers))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=questions)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.answers["urgency"]["score"], 1.99)
+        self.assertEqual(result.answers["urgency"]["probabilities"], {"0": 0.0, "1": 0.01, "2": 0.99})
+
+    def test_score_out_of_range_is_unavailable(self):
+        questions = {"urgency": {"type": "score", "instructions": "urgent?", "criteria": ["low", "high"]}}
+        answers = {
+            "urgency": {
+                "type": "score",
+                "score": 2.5,
+                "confidence": 0.9,
+                "probabilities": {"0": 0.0, "1": 1.0},
+            }
+        }
+        spy = SpyTransport([(200, envelope(answers))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=questions)
+        self.assertEqual(result.status, "unavailable")
+        self.assertIn("score out of range", result.reason)
+
+    def test_score_bad_rubric_level_is_unavailable(self):
+        questions = {"urgency": {"type": "score", "instructions": "urgent?", "criteria": ["low", "high"]}}
+        answers = {
+            "urgency": {
+                "type": "score",
+                "score": 1.0,
+                "confidence": 0.9,
+                "probabilities": {"0": 0.5, "7": 0.5},
+            }
+        }
+        spy = SpyTransport([(200, envelope(answers))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=questions)
+        self.assertEqual(result.status, "unavailable")
+        self.assertIn("non-supplied rubric level", result.reason)
+
+    def test_score_legend_mismatch_is_unavailable(self):
+        questions = {"urgency": {"type": "score", "instructions": "urgent?", "criteria": ["low", "high"]}}
+        answers = {
+            "urgency": {
+                "type": "score",
+                "score": 1.0,
+                "confidence": 0.9,
+                "legend": {"0": "low", "1": "WRONG"},
+                "probabilities": {"0": 0.0, "1": 1.0},
+            }
+        }
+        spy = SpyTransport([(200, envelope(answers))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=questions)
+        self.assertEqual(result.status, "unavailable")
+        self.assertIn("legend", result.reason)
+
+    def test_score_question_without_criteria_is_unavailable(self):
+        questions = {"urgency": {"type": "score", "instructions": "urgent?"}}
+        spy = SpyTransport([(200, envelope({"urgency": {"type": "score", "score": 1.0}}))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=questions)
+        self.assertEqual(result.status, "unavailable")
+        self.assertIn("score criteria", result.reason)
 
     def test_retry_on_429_then_success(self):
         spy = SpyTransport([(429, b"rate limited"), (200, envelope(GOOD_ANSWERS))])
