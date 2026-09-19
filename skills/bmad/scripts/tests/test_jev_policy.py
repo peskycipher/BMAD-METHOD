@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -6,7 +7,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jev_adapter import JevResult  # noqa: E402
 from jev_policy import (  # noqa: E402
+    FIT_RUBRIC,
     PolicyError,
+    apply_request_integrity,
+    build_integrity_questions,
     build_recommend_questions,
     build_state,
     interpret_recommend,
@@ -38,6 +42,10 @@ def choice_result(choice, confidence, probabilities=None, match=0.9, fit=1.9):
     )
 
 
+def integrity_result(noul):
+    return JevResult(status="ok", answers={"request_integrity": {"type": "noul", "noul": noul}})
+
+
 class CandidateIdTests(unittest.TestCase):
     def test_rejects_path_like_ids(self):
         for raw in ("../etc", "a/b", "a\\b", "a b", "", "x" * 81):
@@ -67,12 +75,25 @@ class EvidenceTests(unittest.TestCase):
 class BuildStateTests(unittest.TestCase):
     def test_state_contains_request_and_evidence(self):
         state = build_state("deploy my model", {"goal": "runpod"}, max_chars=4000)
-        self.assertIn("deploy my model", state)
-        self.assertIn("goal: runpod", state)
+        self.assertEqual(state["request"], "deploy my model")
+        self.assertEqual(state["evidence"]["goal"], "runpod")
 
     def test_state_is_capped(self):
+        state = build_state("x" * 2000, {f"k{i}": "v" * 200 for i in range(10)}, max_chars=500)
+        self.assertLessEqual(len(json.dumps(state)), 500)
+
+    def test_state_trims_evidence_before_request(self):
+        evidence = {f"k{i}": "v" * 200 for i in range(10)}
+        state = build_state("a real request worth keeping", evidence, max_chars=500)
+        self.assertEqual(state["request"], "a real request worth keeping")
+        self.assertTrue(state["evidence"])
+        self.assertLess(len(state["evidence"]), 10)
+
+    def test_state_hard_truncates_request_as_last_resort(self):
         state = build_state("x" * 2000, {}, max_chars=500)
-        self.assertEqual(len(state), 500)
+        self.assertLessEqual(len(json.dumps(state)), 500)
+        self.assertEqual(len(state["request"]), 460)
+        self.assertEqual(state["evidence"], {})
 
 
 class RecommendQuestionsTests(unittest.TestCase):
@@ -87,7 +108,8 @@ class RecommendQuestionsTests(unittest.TestCase):
         self.assertEqual(questions["workflow"]["type"], "choice")
         self.assertEqual(questions["matches"]["type"], "noul")
         self.assertEqual(questions["fit"]["type"], "score")
-        self.assertEqual(questions["fit"]["criteria"], ["no clear fit", "partial fit", "clear fit"])
+        self.assertEqual(questions["fit"]["criteria"], FIT_RUBRIC)
+        self.assertEqual(set(build_integrity_questions()), {"request_integrity"})
 
     def test_rejects_wrong_counts(self):
         with self.assertRaises(PolicyError):
@@ -130,6 +152,33 @@ class InterpretRecommendTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "uncertain")
         self.assertEqual(outcome["reason"], "fit_below_threshold")
         self.assertEqual(outcome["fit"], 0.8)
+
+    def test_suspected_injection_is_uncertain(self):
+        outcome = apply_request_integrity(
+            interpret_recommend(choice_result("a", 0.95), ["a", "b"], None), integrity_result(0.97)
+        )
+        self.assertEqual(outcome["status"], "uncertain")
+        self.assertEqual(outcome["reason"], "suspected_request_injection")
+        self.assertEqual(outcome["request_integrity"], 0.97)
+
+    def test_mentioning_injection_without_steering_stays_ok(self):
+        outcome = apply_request_integrity(
+            interpret_recommend(choice_result("a", 0.9), ["a", "b"], None), integrity_result(0.3)
+        )
+        self.assertEqual(outcome["status"], "ok")
+        self.assertEqual(outcome["request_integrity"], 0.3)
+
+    def test_failed_integrity_check_abstains(self):
+        outcome = apply_request_integrity(
+            interpret_recommend(choice_result("a", 0.9), ["a", "b"], None),
+            JevResult(status="unavailable", reason="http_500"),
+        )
+        self.assertEqual(outcome["status"], "uncertain")
+        self.assertEqual(outcome["reason"], "integrity_check_unavailable")
+
+    def test_integrity_gate_not_applied_to_uncertain_outcomes(self):
+        outcome = interpret_recommend(choice_result("unsure", 0.97), ["a", "b"], None)
+        self.assertEqual(outcome["reason"], "model_returned_unsure")
 
     def test_ok_outcome_carries_all_signals(self):
         outcome = interpret_recommend(choice_result("a", 0.9, match=0.95, fit=1.9), ["a", "b"], chosen=None)

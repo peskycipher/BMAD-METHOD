@@ -326,6 +326,10 @@ class JevClient:
 
         if isinstance(state, str) and len(state) > settings.max_state_chars:
             state = state[: settings.max_state_chars]
+        elif not isinstance(state, str) and len(json.dumps(state)) > settings.max_state_chars:
+            # Structured state that outgrew its budget degrades to a bounded
+            # string rather than shipping an unbounded payload.
+            state = json.dumps(state)[: settings.max_state_chars]
         payload: dict[str, Any] = {"model": settings.model, "state": state, "questions": questions}
 
         started = time.monotonic()

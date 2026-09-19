@@ -58,11 +58,23 @@ the behavior:
   overridden). The recommendation call batches three independent questions
   over the same state: a `choice` pick among the candidates (with an explicit
   `unsure` outcome), a `noul` yes/no gate on whether any candidate clearly
-  fits, and a `score` position on the ordered rubric ["no clear fit",
-  "partial fit", "clear fit"]. A recommendation surfaces only when all three
-  signals agree (pick is a real candidate, noul ≥ 0.50, score ≥ 1.50,
-  confidence ≥ 0.60 — thresholds provisional); any disagreement is a
+  fits, and a `score` position on the ordered rubric ["No candidate matches
+  this request", "A candidate loosely matches this request", "A candidate
+  closely matches this request"]. A recommendation surfaces only when all
+  three signals agree (pick is a real candidate, noul ≥ 0.50, score ≥ 1.00,
+  confidence ≥ 0.60 — all thresholds provisional; the score threshold is
+  calibrated against live samples as of 2026-09-19); any disagreement is a
   conservative `uncertain` outcome and the ordinary path resumes.
+- **Prompt-injection gate.** Recommendations that pass every gate get one
+  additional serial `noul` check: does the request text embed instructions
+  aimed at steering the decision itself? This runs as a separate call (asking
+  about injection in the same batch measurably primes the model and depresses
+  the recommendation signals, and the check is a genuine serial dependency —
+  it only matters once the other gates passed). Scores ≥ 0.80 abstain with
+  `suspected_request_injection`; an inconclusive check also abstains.
+  Blatant injections score ~0.97 and are blocked; borderline phrasing such as
+  an explicit user pick scores ~0.63 and passes, and should never have reached
+  the script in the first place (explicit user choices use `--chosen`).
 
 To enable:
 
@@ -94,9 +106,12 @@ OpenRouter's.
 
 ## Data handling and privacy
 
-- Each decision sends only the request text (truncated to 600 chars) and the
-  bounded evidence items the caller passes explicitly (12 items, 300 chars
-  each), assembled into a state capped at `max_state_chars` (4000).
+- Each decision sends the request text and the bounded evidence items the
+  caller passes explicitly, assembled into a **structured state object**
+  (`{"request": ..., "evidence": {...}}`) capped at `max_state_chars`
+  (4000, serialized). Evidence items are trimmed first, then the request is
+  hard-truncated as a last resort; the adapter degrades an over-budget
+  object to a truncated string rather than shipping an unbounded payload.
 - The calling skill must never pass credentials, environment-file contents,
   or unrelated private content as evidence. Nothing else — files, config,
   conversation history — is transmitted.

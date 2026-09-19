@@ -134,6 +134,7 @@ class RecommendCliTests(unittest.TestCase):
                     "confidence": 0.85,
                 },
                 "matches": {"type": "noul", "noul": 0.9},
+                "request_integrity": {"type": "noul", "noul": 0.05},
                 "fit": {
                     "type": "score",
                     "score": 1.8,
@@ -160,13 +161,13 @@ class RecommendCliTests(unittest.TestCase):
         outcome = json.loads(result.stdout)
         self.assertEqual(outcome["status"], "ok")
         self.assertEqual(outcome["recommendation"]["id"], "bmad-build")
-        self.assertEqual(outcome["calls_made"], 1)
+        self.assertEqual(outcome["calls_made"], 2)
         self.assertEqual(outcome["mode"], "suggest")
         self.assertIn("not a probability of correctness", outcome["confidence_note"])
         # The payload only carries what was supplied: bounded state, no secrets.
         sent = handler.requests[0]
         self.assertEqual(sent["model"], "typesafe/jev-1.13-20260917")
-        self.assertIn("implement story 2.3", sent["state"])
+        self.assertIn("implement story 2.3", sent["state"]["request"])
         self.assertNotIn("OPENROUTER_API_KEY", json.dumps(sent))
 
     def test_invalid_provider_response_falls_back(self):
@@ -213,6 +214,7 @@ class RecommendCliTests(unittest.TestCase):
                     "confidence": 0.9,
                 },
                 "matches": {"type": "noul", "noul": 0.95},
+                "request_integrity": {"type": "noul", "noul": 0.05},
                 "fit": {
                     "type": "score",
                     "score": 1.9,
@@ -239,7 +241,7 @@ class RecommendCliTests(unittest.TestCase):
         outcome = json.loads(result.stdout)
         self.assertEqual(outcome["status"], "ok")
         self.assertEqual(outcome["mode"], "shadow")
-        self.assertEqual(len(handler.requests), 1)
+        self.assertEqual(len(handler.requests), 2)
 
     def test_invalid_mode_falls_back_to_disabled(self):
         result = run(

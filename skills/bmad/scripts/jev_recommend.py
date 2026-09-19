@@ -31,6 +31,8 @@ try:
     from jev_adapter import JevClient, load_settings
     from jev_policy import (
         PolicyError,
+        apply_request_integrity,
+        build_integrity_questions,
         build_recommend_questions,
         build_state,
         interpret_recommend,
@@ -121,13 +123,23 @@ def main() -> int:
         return 2
 
     questions = build_recommend_questions(candidates)
+    state = build_state(args.request, evidence, max_chars=settings.max_state_chars)
     client = JevClient(settings)
     result = client.post_decision(
         operation="workflow_recommendation",
-        state=build_state(args.request, evidence, max_chars=settings.max_state_chars),
+        state=state,
         questions=questions,
     )
     outcome = interpret_recommend(result, candidates, None)
+    if outcome["status"] == "ok":
+        # Second-stage prompt-injection gate: a genuine serial dependency
+        # (it only matters once every recommendation gate already passed).
+        integrity_result = client.post_decision(
+            operation="request_integrity",
+            state=state,
+            questions=build_integrity_questions(),
+        )
+        outcome = apply_request_integrity(outcome, integrity_result)
     outcome["calls_made"] = client.calls_used
     if result.status == "ok":
         outcome["usage"] = result.usage
