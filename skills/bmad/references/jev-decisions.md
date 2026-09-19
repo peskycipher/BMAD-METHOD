@@ -7,28 +7,29 @@ calls and the help flow behaves exactly as before.
 
 ## What it is
 
-Two narrow, bounded judgments are wired into the help flow:
+One narrow, bounded judgment is wired into the help flow:
 
-1. **Workflow recommendation** (`jev_recommend.py`) — when the ordinary
-   knowledge-document routing leaves several installed skills genuinely
-   plausible, Jev picks among the candidate ids the help flow itself derived.
-   Explicit user choices and single-candidate cases never reach the provider.
-2. **Clarification triage** (`jev_clarify.py`) — judges whether missing
-   information (intended outcome, scope boundaries, acceptance criteria,
-   consequential constraints) would materially change the next action. It
-   reports the material gap; the primary reasoning model writes the actual
-   question, and "proceed" outcomes let the flow act on reasonable, reversible
-   assumptions instead of asking.
+- **Workflow recommendation** (`jev_recommend.py`) — when the ordinary
+  knowledge-document routing leaves several installed skills genuinely
+  plausible, Jev picks among the candidate ids the help flow itself derived.
+  Explicit user choices and single-candidate cases never reach the provider.
 
 Everything is advisory. Script results never override an explicit user
 instruction, a knowledge-document route, or an existing approval checkpoint.
 
+### Deliberately out of scope
+
+This pilot intentionally does **not** touch planning, readiness gates,
+context filtering, code review, or autonomous workflow execution, and does
+not add a second decision point (such as clarification triage). Those remain
+possible future work and would need their own scoped design, evaluation, and
+compatibility review.
+
 ## Roles and models
 
 - The primary agent (conversation, reasoning, planning, code generation)
-  runs on the host's configured model — for pi.dev, GLM-5.3-flash through
-  Ollama Cloud. That configuration belongs to the host, not to BMad; other
-  hosts and models work unchanged.
+  runs on the host's configured model. That configuration belongs to the
+  host, not to BMad; no host or model is required or changed by this feature.
 - Jev decisions go through OpenRouter's decisions endpoint,
   `https://openrouter.ai/api/alpha/decisions`, using the native TypeSafe
   request/response contract. The only credential is the
@@ -36,19 +37,33 @@ instruction, a knowledge-document route, or an existing approval checkpoint.
   (`api.typesafe.ai`) is ever contacted and no separate TypeSafe key is
   needed.
 
-## Enabling
+## Modes and enabling
+
+`BMAD_DECISION_ASSIST_MODE` (or the `[jev] mode` central-config key) selects
+the behavior:
+
+- `off` (**default**) — existing BMad behavior; the scripts make zero
+  network calls and print an explicit `disabled` status.
+- `shadow` — the script evaluates and returns a full result, but the help
+  flow must not let it influence the user-facing recommendation. Use shadow
+  mode to gather comparison data against the unmodified flow.
+- `suggest` — the script returns a bounded advisory recommendation that the
+  help flow assesses under its existing rules (one weighted vote, trivially
+  overridden).
+
+To enable:
 
 1. Export the key: `export OPENROUTER_API_KEY=...` (reuse an existing key).
-2. Enable the integration, either:
-   - environment: `export BMAD_JEV_ENABLED=1`, or
+2. Select the mode, either:
+   - environment: `export BMAD_DECISION_ASSIST_MODE=suggest` (or `shadow`), or
    - config: add to a central config layer, e.g.
      `{project-root}/_bmad/custom/config.user.toml`:
 
      ```toml
      [jev]
-     enabled = true
+     mode = "suggest"
      # optional overrides (defaults shown)
-     model = "typesafe/jev-1.13"
+     model = "typesafe/jev-1.13-20260917"
      endpoint = "https://openrouter.ai/api/alpha/decisions"
      timeout_seconds = 8.0
      max_state_chars = 4000
@@ -58,9 +73,11 @@ instruction, a knowledge-document route, or an existing approval checkpoint.
    expect `{"status": "disabled", ...}` before enabling and a JSON outcome
    with `status: ok` or `unavailable` after.
 
-Model identifiers are configurable; only `typesafe/jev-1.13` and the
-`~typesafe/jev-latest` alias are verified through OpenRouter. Do not point
-`endpoint` at a TypeSafe-direct URL — the adapter's contract is OpenRouter's.
+The model is pinned to the dated snapshot `typesafe/jev-1.13-20260917` for
+reproducible evaluation (verified live through OpenRouter on 2026-09-19).
+Override it with `BMAD_DECISION_ASSIST_MODEL` or the `[jev] model` key; do
+not point `endpoint` at a TypeSafe-direct URL — the adapter's contract is
+OpenRouter's.
 
 ## Data handling and privacy
 
@@ -79,18 +96,15 @@ Model identifiers are configurable; only `typesafe/jev-1.13` and the
 
 ## Handling of uncertainty
 
-- A `choice`/`score` answer's `confidence` is the provider's
+- A `choice` answer's `confidence` is the provider's
   distribution-concentration statistic. It is **not** a measured probability
   of correctness and must not be described as one.
-- `noul` answers carry only a yes-probability; there is no separate
-  confidence field, and none is invented.
-- Every response is validated (answer ids, types, numeric ranges, option
-  membership, probability sums). Invalid or incomplete responses yield an
-  explicit `unavailable` outcome and the ordinary path resumes.
-- Thresholds (`RECOMMEND_CONFIDENCE_THRESHOLD = 0.60`,
-  `CLARIFY_NOUL_THRESHOLD = 0.70`) are provisional until evaluated against
-  project examples; they are deliberately conservative so ambiguous cases
-  return to the primary model or the user.
+- Every response is validated (question ids, answer types, numeric ranges,
+  option membership, probability sums). Invalid or incomplete responses
+  yield an explicit `unavailable` outcome and the ordinary path resumes.
+- The threshold (`RECOMMEND_CONFIDENCE_THRESHOLD = 0.60`) is provisional
+  until evaluated against project examples; it is deliberately conservative
+  so ambiguous cases return to the primary model or the user.
 - Recommendations are advisory votes for reversible, low-impact navigation
   only. High confidence never approves implementation, rejects an artifact,
   or bypasses a checkpoint.
@@ -116,13 +130,17 @@ the budget; nothing else is retried.
 - A small evaluation set lives in `references/jev-eval-set.md` with expected
   recommendations or acceptable outcome sets per case. Live model-quality
   results recorded there are evidence; mocked tests are not.
+- Full before/after evaluation (unmodified BMAD vs. deterministic baseline
+  vs. Jev-assisted, ≥100 held-out cases, precision/latency/cost targets) is
+  **pending**: run shadow mode plus an evaluation driver to produce it. The
+  feature stays experimental and off by default until those gates pass.
 
 ## Known limitations
 
 - OpenRouter's decisions endpoint is alpha and currently undocumented in
-  OpenRouter's docs; Jev also does not appear in `/v1/models`. The endpoint
-  and schema were verified live (`typesafe/jev-1.13`, resolves to
-  `typesafe/jev-1.13-20260917`); treat future contract changes as possible
+  OpenRouter's docs; Jev also does not appear in the public `/v1/models`
+  listing. The endpoint and schema were verified live
+  (`typesafe/jev-1.13-20260917`); treat future contract changes as possible
   and rely on validation + fallback.
 - Through OpenRouter the native TypeSafe `state` accepts strings and
   structured records; only the string form is exercised here. Usage reports
@@ -131,3 +149,5 @@ the budget; nothing else is retried.
   run in separate calls), no caching.
 - Recommendation quality depends on the candidate list the help flow derives;
   Jev can only choose among supplied options.
+- Live evaluation is pending (see above); the recommendation threshold is
+  provisional and the feature is experimental.

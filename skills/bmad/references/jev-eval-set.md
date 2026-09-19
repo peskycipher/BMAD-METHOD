@@ -1,13 +1,13 @@
 # Jev Decision Evaluation Set
 
-Small evaluation set for the optional Jev integration: expected outcomes
-recorded per case, plus the bounded live results observed against
-`typesafe/jev-1.13-20260917` through OpenRouter on 2026-09-19 (6 decision
-calls, ~$0.0002 total). These are examples to re-evaluate, not permanent
-thresholds. Mocked tests prove the adapter mechanics; only these live runs
-are model-quality evidence.
+Small evaluation set for the optional Jev workflow-recommendation pilot:
+expected outcomes recorded per case, plus the bounded live results observed
+against `typesafe/jev-1.13-20260917` through OpenRouter on 2026-09-19.
+These are examples to re-evaluate, not permanent thresholds. Mocked tests
+prove the adapter mechanics; only these live runs are model-quality
+evidence.
 
-## Recommendation cases (Priority A)
+## Recommendation cases
 
 | Case | Request | Candidates | Expected |
 | --- | --- | --- | --- |
@@ -31,24 +31,14 @@ Recorded live outcomes (2026-09-19, jev-1.13-20260917):
 - **insufficient** → `uncertain` (`model_returned_unsure`, unsure 0.98).
   Abstains as expected.
 
-## Clarification triage cases (Priority B)
-
-| Case | Request | Context supplied | Expected |
-| --- | --- | --- | --- |
-| vague | "improve the wizard" | none | `ask`, with a material gap named |
-| clear | "fix the typo in README line 3 that says 'reprovision' instead of 're-provision'" | scope: single word on one line; outcome: typo corrected | `proceed` (no material gap) |
-
-Recorded live outcomes (2026-09-19):
-
-- **vague** → `ask`; gaps: `outcome_missing` 0.86, `scope_missing` 0.82,
-  `acceptance_missing` 0.76; evidence_sufficient 0.05. Matches expectations.
-- **clear** → `proceed`; no gaps; evidence_sufficient 0.61. Matches
-  expectations.
+A later synthetic probe the same day (write-a-press-release request over
+`bmad-prfaq` vs `bmad-build`) returned a clean confident `bmad-prfaq` pick
+(confidence 0.98, 558 ms round trip), consistent with the expected set.
 
 ## Interpretation notes
 
-- All four non-straightforward recommendation cases behaved conservatively;
-  the one confident pick (ambiguous case) was correct for the expected set.
+- All four non-straightforward cases behaved conservatively; the one
+  confident pick (ambiguous case) was correct for the expected set.
 - The `straightforward` case shows Jev hedges across neighbouring workflow
   choices even when the answer seems obvious to a human reader — reinforcing
   that results stay advisory and the ordinary reasoning path remains the
@@ -57,3 +47,8 @@ Recorded live outcomes (2026-09-19):
   (4) is sized for a single decision point per skill invocation, not for
   batch evaluation — evaluation drivers should use one client per case group
   (this is how the budget behaved during the recorded run).
+- Scope note: this set covers the recommendation pilot only. The recorded
+  live results for the clarification-triage and readiness experiments are
+  kept with that experimental work, outside this pilot's scope. A full
+  ≥100-case held-out evaluation with precision/latency/cost targets is
+  pending (see references/jev-decisions.md).

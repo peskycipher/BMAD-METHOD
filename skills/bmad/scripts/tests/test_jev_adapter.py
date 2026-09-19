@@ -18,8 +18,8 @@ from jev_adapter import (  # noqa: E402
 
 def make_settings(**overrides):
     defaults = dict(
-        enabled=True,
-        model="typesafe/jev-1.13",
+        mode="suggest",
+        model="typesafe/jev-1.13-20260917",
         endpoint="https://openrouter.ai/api/alpha/decisions",
         api_key="test-key",
         timeout_seconds=1.0,
@@ -47,7 +47,6 @@ QUESTIONS = {
         "instructions": "pick one",
         "criteria": {"alpha": None, "beta": None, "unsure": None},
     },
-    "flag": {"type": "noul", "instructions": "yes or no"},
 }
 GOOD_ANSWERS = {
     "pick": {
@@ -56,7 +55,6 @@ GOOD_ANSWERS = {
         "probabilities": {"alpha": 0.7, "beta": 0.2, "unsure": 0.1},
         "confidence": 0.7,
     },
-    "flag": {"type": "noul", "noul": 0.9},
 }
 
 
@@ -74,12 +72,21 @@ class SpyTransport:
 class AdapterTests(unittest.TestCase):
     def test_disabled_makes_zero_calls(self):
         spy = SpyTransport([(200, envelope(GOOD_ANSWERS))])
-        client = JevClient(make_settings(enabled=False), transport=spy)
+        client = JevClient(make_settings(mode="off"), transport=spy)
         result = client.post_decision(operation="op", state="state", questions=QUESTIONS)
         self.assertEqual(result.status, "disabled")
         self.assertEqual(result.reason, "disabled_by_config")
         self.assertEqual(spy.calls, [])
         self.assertEqual(client.calls_used, 0)
+
+    def test_shadow_mode_makes_calls_like_suggest(self):
+        spy = SpyTransport([(200, envelope(GOOD_ANSWERS))])
+        client = JevClient(make_settings(mode="shadow"), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=QUESTIONS)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(len(spy.calls), 1)
+        self.assertTrue(make_settings(mode="shadow").callable)
+        self.assertFalse(make_settings(mode="off").callable)
 
     def test_missing_key_is_unavailable(self):
         client = JevClient(make_settings(api_key=None), transport=SpyTransport([]))
@@ -100,7 +107,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result.answers["pick"]["choice"], "alpha")
         self.assertEqual(result.model, "typesafe/jev-1.13-20260917")
         self.assertEqual(result.usage["input_tokens"], 10)
-        self.assertEqual(spy.calls[0]["payload"]["model"], "typesafe/jev-1.13")
+        self.assertEqual(spy.calls[0]["payload"]["model"], "typesafe/jev-1.13-20260917")
         self.assertEqual(spy.calls[0]["url"], DEFAULT_ENDPOINT)
 
     def test_invalid_json_is_unavailable(self):
@@ -111,11 +118,26 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result.reason, "invalid_json_response")
 
     def test_missing_answer_is_unavailable(self):
-        spy = SpyTransport([(200, envelope({"pick": GOOD_ANSWERS["pick"]}))])
+        spy = SpyTransport([(200, envelope({}))])
         client = JevClient(make_settings(), transport=spy)
         result = client.post_decision(operation="op", state="state", questions=QUESTIONS)
         self.assertEqual(result.status, "unavailable")
         self.assertIn("missing answer", result.reason)
+
+    def test_incomplete_answer_fields_are_unavailable(self):
+        incomplete = {
+            "pick": {
+                "type": "choice",
+                "choice": "alpha",
+                "probabilities": {"alpha": 0.7, "beta": 0.2, "unsure": 0.1},
+                # confidence missing
+            }
+        }
+        spy = SpyTransport([(200, envelope(incomplete))])
+        client = JevClient(make_settings(), transport=spy)
+        result = client.post_decision(operation="op", state="state", questions=QUESTIONS)
+        self.assertEqual(result.status, "unavailable")
+        self.assertIn("confidence", result.reason)
 
     def test_choice_outside_options_is_unavailable(self):
         answers = dict(GOOD_ANSWERS)
@@ -133,7 +155,12 @@ class AdapterTests(unittest.TestCase):
 
     def test_probability_out_of_range_is_unavailable(self):
         answers = dict(GOOD_ANSWERS)
-        answers["flag"] = {"type": "noul", "noul": 1.5}
+        answers["pick"] = {
+            "type": "choice",
+            "choice": "alpha",
+            "probabilities": {"alpha": 1.5, "beta": -0.3, "unsure": 0.1},
+            "confidence": 0.7,
+        }
         spy = SpyTransport([(200, envelope(answers))])
         client = JevClient(make_settings(), transport=spy)
         result = client.post_decision(operation="op", state="state", questions=QUESTIONS)
@@ -163,36 +190,13 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result.status, "unavailable")
         self.assertIn("type", result.reason)
 
-    def test_score_answer_validated(self):
-        score_question = {
-            "readiness": {
-                "type": "score",
-                "instructions": "rate it",
-                "criteria": ["low", "high"],
-            }
-        }
-        good = {
-            "readiness": {
-                "type": "score",
-                "score": 0.8,
-                "legend": {"0": "low", "1": "high"},
-                "probabilities": {"0": 0.2, "1": 0.8},
-                "confidence": 0.6,
-            }
-        }
-        spy = SpyTransport([(200, envelope(good))])
+    def test_unsupported_question_type_is_unavailable(self):
+        questions = {"flag": {"type": "noul", "instructions": "yes or no"}}
+        spy = SpyTransport([(200, envelope({"flag": {"type": "noul", "noul": 0.9}}))])
         client = JevClient(make_settings(), transport=spy)
-        result = client.post_decision(operation="op", state="state", questions=score_question)
-        self.assertEqual(result.status, "ok")
-        self.assertEqual(result.answers["readiness"]["score"], 0.8)
-
-        bad = dict(good)
-        bad["readiness"] = dict(good["readiness"], probabilities={"0": 0.2, "7": 0.8})
-        spy = SpyTransport([(200, envelope(bad))])
-        client = JevClient(make_settings(), transport=spy)
-        result = client.post_decision(operation="op", state="state", questions=score_question)
+        result = client.post_decision(operation="op", state="state", questions=questions)
         self.assertEqual(result.status, "unavailable")
-        self.assertIn("unknown level", result.reason)
+        self.assertIn("unsupported type", result.reason)
 
     def test_retry_on_429_then_success(self):
         spy = SpyTransport([(429, b"rate limited"), (200, envelope(GOOD_ANSWERS))])
@@ -258,20 +262,32 @@ class AdapterTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[3]  # repo root, no _bmad/config.toml needed
         try:
-            os.environ.pop("BMAD_JEV_ENABLED", None)
-            os.environ.pop("BMAD_JEV_MODEL", None)
+            os.environ.pop("BMAD_DECISION_ASSIST_MODE", None)
+            os.environ.pop("BMAD_DECISION_ASSIST_MODEL", None)
             settings = load_settings(root)
-            self.assertFalse(settings.enabled)
-            self.assertEqual(settings.model, "typesafe/jev-1.13")
+            self.assertEqual(settings.mode, "off")
+            self.assertEqual(settings.model, "typesafe/jev-1.13-20260917")
 
-            os.environ["BMAD_JEV_ENABLED"] = "1"
-            os.environ["BMAD_JEV_MODEL"] = "typesafe/jev-1.13-test"
+            os.environ["BMAD_DECISION_ASSIST_MODE"] = "suggest"
+            os.environ["BMAD_DECISION_ASSIST_MODEL"] = "typesafe/jev-1.13-test"
             settings = load_settings(root)
-            self.assertTrue(settings.enabled)
+            self.assertEqual(settings.mode, "suggest")
             self.assertEqual(settings.model, "typesafe/jev-1.13-test")
         finally:
-            os.environ.pop("BMAD_JEV_ENABLED", None)
-            os.environ.pop("BMAD_JEV_MODEL", None)
+            os.environ.pop("BMAD_DECISION_ASSIST_MODE", None)
+            os.environ.pop("BMAD_DECISION_ASSIST_MODEL", None)
+
+    def test_load_settings_unknown_mode_is_off(self):
+        import os
+
+        root = Path(__file__).resolve().parents[3]
+        try:
+            os.environ["BMAD_DECISION_ASSIST_MODE"] = "turbo"
+            settings = load_settings(root)
+            self.assertEqual(settings.mode, "off")
+            self.assertFalse(settings.callable)
+        finally:
+            os.environ.pop("BMAD_DECISION_ASSIST_MODE", None)
 
     def test_jev_result_shape(self):
         result = JevResult(status="ok")

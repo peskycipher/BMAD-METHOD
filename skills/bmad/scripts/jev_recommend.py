@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Priority A — advisory workflow recommendation via Jev (opt-in).
+"""Advisory Jev workflow recommendation (opt-in, disabled by default).
 
 Narrow judgment over supplied evidence: the caller (a BMad skill) derives
 candidate skill ids from the installed registry, passes them here, and this
@@ -12,8 +12,10 @@ remains. Output is a JSON advisory signal on stdout; the calling skill keeps
 full control and must fall back to its ordinary reasoning whenever the status
 is not "ok".
 
-Disabled by default: enable with `[jev] enabled = true` in the central BMad
-config or `BMAD_JEV_ENABLED=1`. When disabled, this makes zero network calls.
+Disabled by default. Set the decision-assist mode to ``suggest`` (advisory
+recommendations) or ``shadow`` (evaluation only) via
+``BMAD_DECISION_ASSIST_MODE`` or the ``[jev] mode`` central-config key. When
+off, this makes zero network calls.
 """
 
 from __future__ import annotations
@@ -72,7 +74,7 @@ def main() -> int:
     settings = load_settings(project_root)
 
     if not settings.callable:
-        status = "disabled" if not settings.enabled else "unavailable"
+        status = "disabled" if settings.mode == "off" else "unavailable"
         reason = "disabled_by_config" if status == "disabled" else "missing_openrouter_api_key"
         print(json.dumps({"status": status, "reason": reason, "calls_made": 0}))
         return 0
@@ -86,7 +88,11 @@ def main() -> int:
             return 2
         # An explicit user choice outranks any model result: echo it and
         # skip the provider entirely (zero network calls).
-        print(json.dumps({"status": "ok", "source": "explicit_user_choice", "recommendation": {"id": chosen}, "calls_made": 0}))
+        print(
+            json.dumps(
+                {"status": "ok", "source": "explicit_user_choice", "recommendation": {"id": chosen}, "calls_made": 0}
+            )
+        )
         return 0
 
     try:
@@ -98,7 +104,11 @@ def main() -> int:
     candidates = list(dict.fromkeys(candidates))
 
     if len(candidates) == 1:
-        print(json.dumps({"status": "ok", "source": "single_candidate", "recommendation": {"id": candidates[0]}, "calls_made": 0}))
+        print(
+            json.dumps(
+                {"status": "ok", "source": "single_candidate", "recommendation": {"id": candidates[0]}, "calls_made": 0}
+            )
+        )
         return 0
     if len(candidates) == 0:
         print(json.dumps({"status": "unavailable", "reason": "no_candidates", "calls_made": 0}))
@@ -122,8 +132,11 @@ def main() -> int:
     if result.status == "ok":
         outcome["usage"] = result.usage
         outcome["model"] = result.model
+    outcome["mode"] = settings.mode
     outcome["advisory"] = True
-    outcome["confidence_note"] = "confidence is the provider's distribution-concentration statistic, not a probability of correctness"
+    outcome["confidence_note"] = (
+        "confidence is the provider's distribution-concentration statistic, not a probability of correctness"
+    )
     print(json.dumps(outcome))
     return 0
 

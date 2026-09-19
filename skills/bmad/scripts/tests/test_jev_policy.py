@@ -7,10 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jev_adapter import JevResult  # noqa: E402
 from jev_policy import (  # noqa: E402
     PolicyError,
-    build_clarify_questions,
     build_recommend_questions,
     build_state,
-    interpret_clarify,
     interpret_recommend,
     parse_evidence,
     sanitize_candidate_id,
@@ -108,43 +106,13 @@ class InterpretRecommendTests(unittest.TestCase):
         self.assertEqual(outcome["reason"], "confidence_below_threshold")
 
     def test_disabled_and_unavailable_pass_through(self):
-        self.assertEqual(interpret_recommend(JevResult(status="disabled", reason="disabled_by_config"), ["a", "b"], None)["status"], "disabled")
+        self.assertEqual(
+            interpret_recommend(JevResult(status="disabled", reason="disabled_by_config"), ["a", "b"], None)["status"],
+            "disabled",
+        )
         outcome = interpret_recommend(JevResult(status="unavailable", reason="http_500"), ["a", "b"], None)
         self.assertEqual(outcome["status"], "unavailable")
         self.assertEqual(outcome["reason"], "http_500")
-
-
-class ClarifyTests(unittest.TestCase):
-    def test_five_independent_noul_questions(self):
-        questions = build_clarify_questions()
-        self.assertEqual(len(questions), 5)
-        for question in questions.values():
-            self.assertEqual(question["type"], "noul")
-
-    def test_gap_reported(self):
-        answers = {q: {"type": "noul", "noul": 0.2} for q in build_clarify_questions()}
-        answers["scope_missing"] = {"type": "noul", "noul": 0.9}
-        outcome = interpret_clarify(JevResult(status="ok", answers=answers))
-        self.assertEqual(outcome["action"], "ask")
-        self.assertEqual(outcome["gaps"][0]["dimension"], "scope_missing")
-
-    def test_proceed_when_no_gaps_and_sufficient(self):
-        answers = {q: {"type": "noul", "noul": 0.2} for q in build_clarify_questions()}
-        answers["evidence_sufficient"] = {"type": "noul", "noul": 0.8}
-        outcome = interpret_clarify(JevResult(status="ok", answers=answers))
-        self.assertEqual(outcome["action"], "proceed")
-        self.assertTrue(outcome["assumptions_ok"])
-
-    def test_conflicting_signals_are_uncertain(self):
-        answers = {q: {"type": "noul", "noul": 0.2} for q in build_clarify_questions()}
-        answers["evidence_sufficient"] = {"type": "noul", "noul": 0.1}
-        outcome = interpret_clarify(JevResult(status="ok", answers=answers))
-        self.assertEqual(outcome["action"], "uncertain")
-        self.assertEqual(outcome["reason"], "conflicting_signals")
-
-    def test_unavailable_passes_through(self):
-        self.assertEqual(interpret_clarify(JevResult(status="unavailable", reason="http_0"))["action"], "unavailable")
-        self.assertEqual(interpret_clarify(JevResult(status="disabled", reason="disabled_by_config"))["action"], "disabled")
 
 
 if __name__ == "__main__":

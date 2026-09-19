@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -10,7 +9,6 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 RECOMMEND = SCRIPTS / "jev_recommend.py"
-CLARIFY = SCRIPTS / "jev_clarify.py"
 
 
 class _MockDecisionsHandler(BaseHTTPRequestHandler):
@@ -43,7 +41,11 @@ def make_server(status, body):
 def run(script, args, env_overrides):
     env = dict(os.environ)
     env.update(env_overrides)
-    for key in ("BMAD_JEV_ENABLED", "BMAD_JEV_MODEL", "BMAD_JEV_ENDPOINT"):
+    for key in (
+        "BMAD_DECISION_ASSIST_MODE",
+        "BMAD_DECISION_ASSIST_MODEL",
+        "BMAD_DECISION_ASSIST_ENDPOINT",
+    ):
         env.setdefault(key, "")
     return subprocess.run(
         [sys.executable, str(script), *args],
@@ -61,18 +63,18 @@ class RecommendCliTests(unittest.TestCase):
         result = run(
             RECOMMEND,
             ["--request", "deploy my model", "--candidates", "bmad-spec,bmad-build"],
-            {"BMAD_JEV_ENABLED": "0", "OPENROUTER_API_KEY": "test-key"},
+            {"BMAD_DECISION_ASSIST_MODE": "off", "OPENROUTER_API_KEY": "test-key"},
         )
         self.assertEqual(result.returncode, 0)
         outcome = json.loads(result.stdout)
         self.assertEqual(outcome["status"], "disabled")
         self.assertEqual(outcome["calls_made"], 0)
 
-    def test_enabled_without_key_is_unavailable(self):
+    def test_suggest_without_key_is_unavailable(self):
         result = run(
             RECOMMEND,
             ["--request", "deploy my model", "--candidates", "bmad-spec,bmad-build"],
-            {"BMAD_JEV_ENABLED": "1", "OPENROUTER_API_KEY": ""},
+            {"BMAD_DECISION_ASSIST_MODE": "suggest", "OPENROUTER_API_KEY": ""},
         )
         self.assertEqual(result.returncode, 0)
         outcome = json.loads(result.stdout)
@@ -87,9 +89,9 @@ class RecommendCliTests(unittest.TestCase):
                 RECOMMEND,
                 ["--request", "deploy", "--candidates", "bmad-spec,bmad-build", "--chosen", "bmad-build"],
                 {
-                    "BMAD_JEV_ENABLED": "1",
+                    "BMAD_DECISION_ASSIST_MODE": "suggest",
                     "OPENROUTER_API_KEY": "test-key",
-                    "BMAD_JEV_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
+                    "BMAD_DECISION_ASSIST_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
                 },
             )
         finally:
@@ -105,7 +107,7 @@ class RecommendCliTests(unittest.TestCase):
         result = run(
             RECOMMEND,
             ["--request", "deploy", "--candidates", "bmad-build"],
-            {"BMAD_JEV_ENABLED": "1", "OPENROUTER_API_KEY": "test-key"},
+            {"BMAD_DECISION_ASSIST_MODE": "suggest", "OPENROUTER_API_KEY": "test-key"},
         )
         self.assertEqual(result.returncode, 0)
         outcome = json.loads(result.stdout)
@@ -116,7 +118,7 @@ class RecommendCliTests(unittest.TestCase):
         result = run(
             RECOMMEND,
             ["--request", "deploy", "--candidates", "../etc/passwd,bmad-build"],
-            {"BMAD_JEV_ENABLED": "1", "OPENROUTER_API_KEY": "test-key"},
+            {"BMAD_DECISION_ASSIST_MODE": "suggest", "OPENROUTER_API_KEY": "test-key"},
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("path-like", result.stderr)
@@ -140,9 +142,9 @@ class RecommendCliTests(unittest.TestCase):
                 RECOMMEND,
                 ["--request", "implement story 2.3", "--candidates", "bmad-spec,bmad-build"],
                 {
-                    "BMAD_JEV_ENABLED": "1",
+                    "BMAD_DECISION_ASSIST_MODE": "suggest",
                     "OPENROUTER_API_KEY": "test-key",
-                    "BMAD_JEV_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
+                    "BMAD_DECISION_ASSIST_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
                 },
             )
         finally:
@@ -152,24 +154,28 @@ class RecommendCliTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "ok")
         self.assertEqual(outcome["recommendation"]["id"], "bmad-build")
         self.assertEqual(outcome["calls_made"], 1)
+        self.assertEqual(outcome["mode"], "suggest")
         self.assertIn("not a probability of correctness", outcome["confidence_note"])
         # The payload only carries what was supplied: bounded state, no secrets.
         sent = handler.requests[0]
-        self.assertEqual(sent["model"], "typesafe/jev-1.13")
+        self.assertEqual(sent["model"], "typesafe/jev-1.13-20260917")
         self.assertIn("implement story 2.3", sent["state"])
         self.assertNotIn("OPENROUTER_API_KEY", json.dumps(sent))
 
     def test_invalid_provider_response_falls_back(self):
-        body = {"model": "x", "answers": {"workflow": {"type": "choice", "choice": "not-offered", "probabilities": {}, "confidence": 1}}}
+        body = {
+            "model": "x",
+            "answers": {"workflow": {"type": "choice", "choice": "not-offered", "probabilities": {}, "confidence": 1}},
+        }
         server, _ = make_server(200, body)
         try:
             result = run(
                 RECOMMEND,
                 ["--request", "implement", "--candidates", "bmad-spec,bmad-build"],
                 {
-                    "BMAD_JEV_ENABLED": "1",
+                    "BMAD_DECISION_ASSIST_MODE": "suggest",
                     "OPENROUTER_API_KEY": "test-key",
-                    "BMAD_JEV_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
+                    "BMAD_DECISION_ASSIST_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
                 },
             )
         finally:
@@ -183,47 +189,67 @@ class RecommendCliTests(unittest.TestCase):
         result = run(
             RECOMMEND,
             ["--request", "deploy", "--candidates", "a,b"],
-            {"BMAD_JEV_ENABLED": "0", "OPENROUTER_API_KEY": "sk-or-secret-value"},
+            {"BMAD_DECISION_ASSIST_MODE": "off", "OPENROUTER_API_KEY": "sk-or-secret-value"},
         )
         self.assertNotIn("sk-or-secret-value", result.stdout + result.stderr)
 
-
-class ClarifyCliTests(unittest.TestCase):
-    def test_disabled(self):
-        result = run(
-            CLARIFY,
-            ["--request", "add a feature"],
-            {"BMAD_JEV_ENABLED": "0", "OPENROUTER_API_KEY": "test-key"},
-        )
-        self.assertEqual(result.returncode, 0)
-        outcome = json.loads(result.stdout)
-        self.assertEqual(outcome["action"], "disabled")
-        self.assertEqual(outcome["calls_made"], 0)
-
-    def test_mocked_triage_reports_gap(self):
-        questions = ["outcome_missing", "scope_missing", "acceptance_missing", "constraint_missing", "evidence_sufficient"]
-        answers = {q: {"type": "noul", "noul": 0.2} for q in questions}
-        answers["scope_missing"] = {"type": "noul", "noul": 0.85}
-        answers["evidence_sufficient"] = {"type": "noul", "noul": 0.6}
-        body = {"model": "typesafe/jev-1.13-20260917", "answers": answers, "usage": {"input_tokens": 90, "output_tokens": 30}}
+    def test_shadow_mode_runs_but_tags_output(self):
+        """Shadow mode evaluates, but the output is tagged so hosts can refuse
+        to let it influence the user-facing recommendation."""
+        body = {
+            "model": "typesafe/jev-1.13-20260917",
+            "answers": {
+                "workflow": {
+                    "type": "choice",
+                    "choice": "bmad-spec",
+                    "probabilities": {"bmad-spec": 0.9, "bmad-build": 0.05, "unsure": 0.05},
+                    "confidence": 0.9,
+                }
+            },
+            "usage": {"input_tokens": 50, "output_tokens": 10},
+        }
         server, handler = make_server(200, body)
         try:
             result = run(
-                CLARIFY,
-                ["--request", "improve the wizard", "--context", "goal=better UX", "--project-root", tempfile.mkdtemp()],
+                RECOMMEND,
+                ["--request", "plan something", "--candidates", "bmad-spec,bmad-build"],
                 {
-                    "BMAD_JEV_ENABLED": "1",
+                    "BMAD_DECISION_ASSIST_MODE": "shadow",
                     "OPENROUTER_API_KEY": "test-key",
-                    "BMAD_JEV_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
+                    "BMAD_DECISION_ASSIST_ENDPOINT": f"http://127.0.0.1:{server.server_port}/api/alpha/decisions",
                 },
             )
         finally:
             server.shutdown()
         self.assertEqual(result.returncode, 0, result.stderr)
         outcome = json.loads(result.stdout)
-        self.assertEqual(outcome["action"], "ask")
-        self.assertEqual(outcome["gaps"][0]["dimension"], "scope_missing")
-        self.assertEqual(handler.requests[0]["state"].count("goal: better UX"), 1)
+        self.assertEqual(outcome["status"], "ok")
+        self.assertEqual(outcome["mode"], "shadow")
+        self.assertEqual(len(handler.requests), 1)
+
+    def test_invalid_mode_falls_back_to_disabled(self):
+        result = run(
+            RECOMMEND,
+            ["--request", "deploy", "--candidates", "a,b"],
+            {"BMAD_DECISION_ASSIST_MODE": "turbo", "OPENROUTER_API_KEY": "test-key"},
+        )
+        self.assertEqual(result.returncode, 0)
+        outcome = json.loads(result.stdout)
+        self.assertEqual(outcome["status"], "disabled")
+        self.assertEqual(outcome["calls_made"], 0)
+
+    def test_helper_execution_writes_no_artifacts(self):
+        """Help-time runs must not leave files behind (no caches, no logs,
+        no telemetry). The skill tree is snapshot before and after."""
+        before = {p.relative_to(SCRIPTS) for p in SCRIPTS.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+        result = run(
+            RECOMMEND,
+            ["--request", "deploy", "--candidates", "bmad-build"],
+            {"BMAD_DECISION_ASSIST_MODE": "suggest", "OPENROUTER_API_KEY": ""},
+        )
+        after = {p.relative_to(SCRIPTS) for p in SCRIPTS.rglob("*") if p.is_file() and "__pycache__" not in p.parts}
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":

@@ -10,11 +10,14 @@ request/response contract ({state, questions} -> {answers, usage}). The only
 credential source is the ``OPENROUTER_API_KEY`` environment variable; no
 TypeSafe-direct endpoint is ever contacted.
 
-The adapter is strictly opt-in: it runs network calls only when enabled via
-``[jev] enabled = true`` in the central BMad config layers or the
-``BMAD_JEV_ENABLED=1`` environment variable. When disabled, unavailable, or
-given an invalid response, callers get an explicit status and must fall back
-to the ordinary BMad path.
+The adapter is strictly opt-in: it runs network calls only when the
+decision-assist mode is ``suggest`` or ``shadow``, set via
+``BMAD_DECISION_ASSIST_MODE`` or the ``[jev] mode`` key in the central BMad
+config layers. ``off`` (the default) makes zero network calls; ``shadow``
+behaves like ``suggest`` but its output is for evaluation only and must not
+influence user-facing recommendations. When disabled, unavailable, or given
+an invalid response, callers get an explicit status and must fall back to
+the ordinary BMad path.
 
 Import this module from sibling scripts (it expects config_utils.py beside
 it); it has no third-party dependencies.
@@ -45,9 +48,8 @@ except ModuleNotFoundError as error:  # pragma: no cover - sibling import only
     raise SystemExit(3) from None
 
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
-DEFAULT_MODEL = "typesafe/jev-1.13"
-
-TRUTHY = {"1", "true", "yes", "on"}
+DEFAULT_MODEL = "typesafe/jev-1.13-20260917"  # pinned dated snapshot: reproducible evaluation
+VALID_MODES = ("off", "shadow", "suggest")
 
 # Per-process call budget: each CLI run performs at most a handful of
 # decisions; the adapter refuses to exceed this no matter how callers loop.
@@ -67,7 +69,7 @@ class JevAdapterError(RuntimeError):
 class JevSettings:
     """Resolved, opt-in configuration for the decision provider."""
 
-    enabled: bool
+    mode: str  # "off" | "shadow" | "suggest"
     model: str
     endpoint: str
     api_key: str | None
@@ -79,7 +81,7 @@ class JevSettings:
     @property
     def callable(self) -> bool:
         """True only when every prerequisite for a network call is present."""
-        return bool(self.enabled and self.api_key)
+        return self.mode in ("shadow", "suggest") and bool(self.api_key)
 
 
 @dataclass
@@ -93,21 +95,16 @@ class JevResult:
     model: str | None = None
 
 
-def _env_flag(name: str) -> bool | None:
-    raw = os.environ.get(name)
-    if raw is None:
-        return None
-    return raw.strip().lower() in TRUTHY
-
-
 def load_settings(project_root: Path | None) -> JevSettings:
     """Resolve settings from central config layers, then environment overrides.
 
     Reads the optional ``[jev]`` table from the central BMad config (all
     layers, merged by config_utils) and applies environment overrides:
-    ``BMAD_JEV_ENABLED``, ``BMAD_JEV_MODEL``, ``BMAD_JEV_ENDPOINT``,
-    ``BMAD_JEV_TIMEOUT_SECONDS``, ``BMAD_JEV_MAX_STATE_CHARS``. The API key
-    comes only from ``OPENROUTER_API_KEY``.
+    ``BMAD_DECISION_ASSIST_MODE``, ``BMAD_DECISION_ASSIST_MODEL`` and
+    ``BMAD_DECISION_ASSIST_ENDPOINT``. The
+    mode defaults to ``off``; an unknown mode value is treated as ``off``
+    with a one-line warning. The API key comes only from
+    ``OPENROUTER_API_KEY``.
     """
     table: dict[str, Any] = {}
     if project_root is not None:
@@ -128,28 +125,22 @@ def load_settings(project_root: Path | None) -> JevSettings:
             return float(value)
         return None
 
-    enabled_env = _env_flag("BMAD_JEV_ENABLED")
-    if enabled_env is not None:
-        enabled = enabled_env
-    else:
-        config_enabled = table.get("enabled")
-        enabled = config_enabled is True
+    mode = os.environ.get("BMAD_DECISION_ASSIST_MODE", "").strip().lower()
+    if not mode:
+        config_mode = table.get("mode")
+        mode = config_mode.strip().lower() if isinstance(config_mode, str) else ""
+    if mode not in VALID_MODES:
+        if mode:
+            sys.stderr.write(f"warning: unknown decision assist mode {mode!r}; treating as off\n")
+        mode = "off"
 
-    model = (
-        os.environ.get("BMAD_JEV_MODEL", "").strip()
-        or _table_str("model")
-        or DEFAULT_MODEL
-    )
-    endpoint = (
-        os.environ.get("BMAD_JEV_ENDPOINT", "").strip()
-        or _table_str("endpoint")
-        or DEFAULT_ENDPOINT
-    )
+    model = os.environ.get("BMAD_DECISION_ASSIST_MODEL", "").strip() or _table_str("model") or DEFAULT_MODEL
+    endpoint = os.environ.get("BMAD_DECISION_ASSIST_ENDPOINT", "").strip() or _table_str("endpoint") or DEFAULT_ENDPOINT
     timeout_seconds = _table_float("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
     max_state_chars = _table_float("max_state_chars") or DEFAULT_MAX_STATE_CHARS
 
     return JevSettings(
-        enabled=enabled,
+        mode=mode,
         model=model,
         endpoint=endpoint,
         api_key=os.environ.get("OPENROUTER_API_KEY") or None,
@@ -196,9 +187,7 @@ def _log(operation: str, duration_ms: int, status: str, reason: str | None, usag
     sys.stderr.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def _validate_answers(
-    questions: dict[str, dict[str, Any]], answers: Any
-) -> tuple[dict[str, Any], str | None]:
+def _validate_answers(questions: dict[str, dict[str, Any]], answers: Any) -> tuple[dict[str, Any], str | None]:
     """Validate the answers map against the questions. Returns (answers, error)."""
     if not isinstance(answers, dict):
         return {}, "answers is not an object"
@@ -213,12 +202,7 @@ def _validate_answers(
         expected_type = question.get("type")
         if answer_type != expected_type:
             return {}, f"answer `{question_id}` type {answer_type!r} != question type {expected_type!r}"
-        if expected_type == "noul":
-            noul = answer.get("noul")
-            if not isinstance(noul, (int, float)) or isinstance(noul, bool) or not 0.0 <= noul <= 1.0:
-                return {}, f"answer `{question_id}` noul out of range or missing"
-            validated[question_id] = {"type": "noul", "noul": float(noul)}
-        elif expected_type == "choice":
+        if expected_type == "choice":
             choice = answer.get("choice")
             options = (question.get("criteria") or {}).keys()
             if not isinstance(choice, str) or choice not in options:
@@ -230,7 +214,11 @@ def _validate_answers(
             for option, probability in probabilities.items():
                 if option not in options:
                     return {}, f"answer `{question_id}` probabilities name a non-supplied option"
-                if not isinstance(probability, (int, float)) or isinstance(probability, bool) or not 0.0 <= probability <= 1.0:
+                if (
+                    not isinstance(probability, (int, float))
+                    or isinstance(probability, bool)
+                    or not 0.0 <= probability <= 1.0
+                ):
                     return {}, f"answer `{question_id}` probability out of range"
                 total += float(probability)
             if abs(total - 1.0) > 0.05:
@@ -241,33 +229,6 @@ def _validate_answers(
             validated[question_id] = {
                 "type": "choice",
                 "choice": choice,
-                "probabilities": {k: float(v) for k, v in probabilities.items()},
-                "confidence": float(confidence),
-            }
-        elif expected_type == "score":
-            legend = answer.get("legend")
-            probabilities = answer.get("probabilities")
-            if not isinstance(legend, dict) or not isinstance(probabilities, dict) or not probabilities:
-                return {}, f"answer `{question_id}` legend or probabilities missing"
-            total = 0.0
-            for level, probability in probabilities.items():
-                if level not in legend:
-                    return {}, f"answer `{question_id}` probabilities name an unknown level"
-                if not isinstance(probability, (int, float)) or isinstance(probability, bool) or not 0.0 <= probability <= 1.0:
-                    return {}, f"answer `{question_id}` probability out of range"
-                total += float(probability)
-            if abs(total - 1.0) > 0.05:
-                return {}, f"answer `{question_id}` probabilities do not sum to 1"
-            score = answer.get("score")
-            if not isinstance(score, (int, float)) or isinstance(score, bool):
-                return {}, f"answer `{question_id}` score missing"
-            confidence = answer.get("confidence")
-            if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0.0 <= confidence <= 1.0:
-                return {}, f"answer `{question_id}` confidence out of range or missing"
-            validated[question_id] = {
-                "type": "score",
-                "score": float(score),
-                "legend": dict(legend),
                 "probabilities": {k: float(v) for k, v in probabilities.items()},
                 "confidence": float(confidence),
             }
@@ -299,7 +260,7 @@ class JevClient:
         raises for provider problems; callers must handle both non-ok statuses.
         """
         settings = self.settings
-        if not settings.enabled:
+        if settings.mode == "off":
             return JevResult(status="disabled", reason="disabled_by_config")
         if not settings.api_key or self._transport is None:
             return JevResult(status="unavailable", reason="missing_openrouter_api_key")

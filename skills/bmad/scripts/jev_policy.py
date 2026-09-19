@@ -22,23 +22,11 @@ from typing import Any
 # Provisional thresholds. Confidence is the model's distribution-concentration
 # statistic, NOT a measured probability of correctness.
 RECOMMEND_CONFIDENCE_THRESHOLD = 0.60
-CLARIFY_NOUL_THRESHOLD = 0.70
-CONFLICT_LOW = 0.50
 
 UNSURE_OPTION = "unsure"
 MAX_CANDIDATES = 8
 MAX_EVIDENCE_ITEMS = 12
 MAX_EVIDENCE_VALUE_CHARS = 300
-
-# Clarification dimensions, each asked as one independent noul question:
-# "would the missing information on this dimension materially change the
-# next action?" A near-1 answer means the gap is material.
-CLARIFY_DIMENSIONS = {
-    "outcome_missing": "the intended outcome of the request",
-    "scope_missing": "the boundaries of what is included and excluded",
-    "acceptance_missing": "how the user will judge the result is done and correct",
-    "constraint_missing": "a consequential constraint such as a deadline, budget, or hard dependency",
-}
 
 
 class PolicyError(ValueError):
@@ -146,86 +134,12 @@ def interpret_recommend(result: Any, candidates: list[str], chosen: str | None) 
     }
 
 
-def build_clarify_questions() -> dict[str, dict[str, Any]]:
-    """Independent noul questions for each clarification dimension.
-
-    All dimensions are asked together in one call: they are independent
-    judgments over the same state and cannot see one another's answers.
-    """
-    questions: dict[str, dict[str, Any]] = {}
-    for question_id, dimension in CLARIFY_DIMENSIONS.items():
-        questions[question_id] = {
-            "type": "noul",
-            "instructions": (
-                f"Would proceeding without knowing {dimension} materially change "
-                "the next action, such that asking the user is worth the cost?"
-            ),
-            "criteria": {
-                "true": "The missing information would materially change the next action",
-                "false": "Reasonable, reversible defaults make the action safe without it",
-            },
-        }
-    questions["evidence_sufficient"] = {
-        "type": "noul",
-        "instructions": (
-            "Does the supplied evidence as a whole give enough context to act "
-            "sensibly on the request without asking anything?"
-        ),
-        "criteria": {
-            "true": "The evidence covers what the action needs",
-            "false": "The evidence leaves the request too vague to act on",
-        },
-    }
-    return questions
-
-
-def interpret_clarify(result: Any) -> dict[str, Any]:
-    """Turn an adapter result into an explicit triage outcome.
-
-    Returns `action` (proceed | ask | uncertain | unavailable | disabled),
-    the material `gaps` found (highest first), and `assumptions_ok` when the
-    caller may proceed on reasonable, reversible assumptions. The question's
-    wording is deliberately NOT generated here: that stays with the primary
-    reasoning model.
-    """
-    if result is None:
-        return {"action": "unavailable", "reason": "no_result"}
-    if result.status == "disabled":
-        return {"action": "disabled", "reason": result.reason}
-    if result.status != "ok":
-        return {"action": "unavailable", "reason": result.reason}
-
-    answers = result.answers
-    gaps: list[dict[str, Any]] = []
-    for question_id in CLARIFY_DIMENSIONS:
-        answer = answers.get(question_id, {})
-        noul = answer.get("noul")
-        if noul is not None and noul >= CLARIFY_NOUL_THRESHOLD:
-            gaps.append({"dimension": question_id, "noul": noul})
-    gaps.sort(key=lambda item: -item["noul"])
-
-    sufficient = answers.get("evidence_sufficient", {}).get("noul")
-
-    if gaps:
-        return {"action": "ask", "gaps": gaps, "sufficient": sufficient}
-    if sufficient is not None and sufficient < CONFLICT_LOW:
-        # No single dimension is material, yet overall evidence is judged
-        # insufficient: conflicting signals, do not decide from them.
-        return {"action": "uncertain", "reason": "conflicting_signals", "gaps": gaps, "sufficient": sufficient}
-    return {"action": "proceed", "gaps": [], "sufficient": sufficient, "assumptions_ok": True}
-
-
 __all__ = [
-    "CLARIFY_DIMENSIONS",
-    "CONFLICT_LOW",
-    "CLARIFY_NOUL_THRESHOLD",
     "PolicyError",
     "RECOMMEND_CONFIDENCE_THRESHOLD",
     "UNSURE_OPTION",
-    "build_clarify_questions",
     "build_recommend_questions",
     "build_state",
-    "interpret_clarify",
     "interpret_recommend",
     "parse_evidence",
     "sanitize_candidate_id",
