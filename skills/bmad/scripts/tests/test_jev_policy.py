@@ -15,7 +15,7 @@ from jev_policy import (  # noqa: E402
 )
 
 
-def choice_result(choice, confidence, probabilities=None):
+def choice_result(choice, confidence, probabilities=None, match=0.9, fit=1.9):
     if probabilities is None:
         probabilities = {choice: confidence, "unsure": 1 - confidence}
     return JevResult(
@@ -26,7 +26,14 @@ def choice_result(choice, confidence, probabilities=None):
                 "choice": choice,
                 "probabilities": probabilities,
                 "confidence": confidence,
-            }
+            },
+            "matches": {"type": "noul", "noul": match},
+            "fit": {
+                "type": "score",
+                "score": fit,
+                "confidence": 0.9,
+                "probabilities": {str(min(int(round(fit)), 2)): 1.0},
+            },
         },
     )
 
@@ -75,6 +82,13 @@ class RecommendQuestionsTests(unittest.TestCase):
         self.assertEqual(set(criteria), {"a", "b", "unsure"})
         self.assertEqual(questions["workflow"]["type"], "choice")
 
+    def test_batches_all_three_primitives(self):
+        questions = build_recommend_questions(["a", "b"])
+        self.assertEqual(questions["workflow"]["type"], "choice")
+        self.assertEqual(questions["matches"]["type"], "noul")
+        self.assertEqual(questions["fit"]["type"], "score")
+        self.assertEqual(questions["fit"]["criteria"], ["no clear fit", "partial fit", "clear fit"])
+
     def test_rejects_wrong_counts(self):
         with self.assertRaises(PolicyError):
             build_recommend_questions(["a"])
@@ -104,6 +118,24 @@ class InterpretRecommendTests(unittest.TestCase):
         outcome = interpret_recommend(choice_result("a", 0.3), ["a", "b"], chosen=None)
         self.assertEqual(outcome["status"], "uncertain")
         self.assertEqual(outcome["reason"], "confidence_below_threshold")
+
+    def test_low_match_gate_is_uncertain(self):
+        outcome = interpret_recommend(choice_result("a", 0.9, match=0.2), ["a", "b"], chosen=None)
+        self.assertEqual(outcome["status"], "uncertain")
+        self.assertEqual(outcome["reason"], "match_below_threshold")
+        self.assertEqual(outcome["match"], 0.2)
+
+    def test_low_fit_gate_is_uncertain(self):
+        outcome = interpret_recommend(choice_result("a", 0.9, fit=0.8), ["a", "b"], chosen=None)
+        self.assertEqual(outcome["status"], "uncertain")
+        self.assertEqual(outcome["reason"], "fit_below_threshold")
+        self.assertEqual(outcome["fit"], 0.8)
+
+    def test_ok_outcome_carries_all_signals(self):
+        outcome = interpret_recommend(choice_result("a", 0.9, match=0.95, fit=1.9), ["a", "b"], chosen=None)
+        self.assertEqual(outcome["status"], "ok")
+        self.assertEqual(outcome["match"], 0.95)
+        self.assertEqual(outcome["fit"], 1.9)
 
     def test_disabled_and_unavailable_pass_through(self):
         self.assertEqual(

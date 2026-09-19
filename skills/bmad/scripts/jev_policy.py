@@ -22,6 +22,12 @@ from typing import Any
 # Provisional thresholds. Confidence is the model's distribution-concentration
 # statistic, NOT a measured probability of correctness.
 RECOMMEND_CONFIDENCE_THRESHOLD = 0.60
+# Noul (yes/no) gate: the model must affirm that a candidate clearly fits.
+MATCH_NOUL_THRESHOLD = 0.50
+# Score gate: the rubric position must reach "partial fit" leaning "clear fit"
+# on the ordered rubric ["no clear fit", "partial fit", "clear fit"].
+FIT_RUBRIC = ["no clear fit", "partial fit", "clear fit"]
+FIT_CLEAR_THRESHOLD = 1.50
 
 UNSURE_OPTION = "unsure"
 MAX_CANDIDATES = 8
@@ -69,10 +75,18 @@ def build_state(request: str, evidence: dict[str, str], *, max_chars: int) -> st
 
 
 def build_recommend_questions(candidates: list[str]) -> dict[str, dict[str, Any]]:
-    """One choice question over derived candidates plus an explicit unsure outcome.
+    """One batched call with three independent questions over the candidates.
 
-    The unsure option is the documented no-match outcome: it lets the model
-    express that no candidate clearly fits instead of forcing a pick.
+    - `workflow` (choice): which candidate fits best, with an explicit unsure
+      outcome so the model never has to force a pick.
+    - `matches` (noul): calibrated yes/no gate — does at least one candidate
+      clearly fit the request at all?
+    - `fit` (score): ordered-rubric position for how well the best candidate
+      fits, from "no clear fit" to "clear fit".
+
+    The recommendation surfaces only when all three signals agree (see
+    `interpret_recommend`); disagreement is conservative abstention, not a
+    forced pick.
     """
     if not 2 <= len(candidates) <= MAX_CANDIDATES:
         raise PolicyError("recommendation needs 2..8 candidates")
@@ -87,12 +101,38 @@ def build_recommend_questions(candidates: list[str]) -> dict[str, dict[str, Any]
                 "clearly fits, choose unsure."
             ),
             "criteria": criteria,
-        }
+        },
+        "matches": {
+            "type": "noul",
+            "instructions": (
+                "Does at least one candidate skill clearly match the user request "
+                "and current project state?"
+            ),
+            "criteria": {
+                "false": "No candidate clearly fits; ordinary reasoning should handle this",
+                "true": "At least one candidate clearly fits",
+            },
+        },
+        "fit": {
+            "type": "score",
+            "instructions": (
+                "How well does the best-fitting candidate skill match the user "
+                "request and current project state?"
+            ),
+            "criteria": list(FIT_RUBRIC),
+        },
     }
 
 
 def interpret_recommend(result: Any, candidates: list[str], chosen: str | None) -> dict[str, Any]:
     """Turn an adapter result into an explicit recommendation outcome.
+
+    A recommendation surfaces only when three signals agree: the choice pick
+    is a real candidate (not `unsure`), the noul match gate affirms a clear
+    fit, the score position reaches the fit threshold, and the choice
+    confidence clears the concentration threshold. Any disagreement yields
+    `status: uncertain` with a machine-readable reason; the calling skill
+    then falls back to ordinary reasoning.
 
     Returns a dict with `status` (ok | uncertain | disabled | unavailable),
     an optional `recommendation` (id, confidence, probabilities), and a
@@ -110,9 +150,18 @@ def interpret_recommend(result: Any, candidates: list[str], chosen: str | None) 
     answer = result.answers.get("workflow", {})
     if answer.get("type") != "choice":
         return {"status": "unavailable", "reason": "unexpected_answer_type"}
+    match_answer = result.answers.get("matches", {})
+    if match_answer.get("type") != "noul":
+        return {"status": "unavailable", "reason": "unexpected_answer_type"}
+    fit_answer = result.answers.get("fit", {})
+    if fit_answer.get("type") != "score":
+        return {"status": "unavailable", "reason": "unexpected_answer_type"}
     choice = answer.get("choice")
     confidence = answer.get("confidence")
     probabilities = answer.get("probabilities", {})
+    match = match_answer.get("noul")
+    fit = fit_answer.get("score")
+    signals = {"match": match, "fit": fit}
     if choice not in candidates:
         # Includes the unsure option: ambiguity is an outcome, not a pick.
         return {
@@ -120,21 +169,41 @@ def interpret_recommend(result: Any, candidates: list[str], chosen: str | None) 
             "reason": "model_returned_unsure",
             "confidence": confidence,
             "probabilities": probabilities,
+            **signals,
+        }
+    if match < MATCH_NOUL_THRESHOLD:
+        return {
+            "status": "uncertain",
+            "reason": "match_below_threshold",
+            "recommendation": {"id": choice, "confidence": confidence, "probabilities": probabilities},
+            **signals,
+        }
+    if fit < FIT_CLEAR_THRESHOLD:
+        return {
+            "status": "uncertain",
+            "reason": "fit_below_threshold",
+            "recommendation": {"id": choice, "confidence": confidence, "probabilities": probabilities},
+            **signals,
         }
     if confidence < RECOMMEND_CONFIDENCE_THRESHOLD:
         return {
             "status": "uncertain",
             "reason": "confidence_below_threshold",
             "recommendation": {"id": choice, "confidence": confidence, "probabilities": probabilities},
+            **signals,
         }
     return {
         "status": "ok",
         "source": "jev",
         "recommendation": {"id": choice, "confidence": confidence, "probabilities": probabilities},
+        **signals,
     }
 
 
 __all__ = [
+    "FIT_CLEAR_THRESHOLD",
+    "FIT_RUBRIC",
+    "MATCH_NOUL_THRESHOLD",
     "PolicyError",
     "RECOMMEND_CONFIDENCE_THRESHOLD",
     "UNSURE_OPTION",

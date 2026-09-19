@@ -132,7 +132,14 @@ class RecommendCliTests(unittest.TestCase):
                     "choice": "bmad-build",
                     "probabilities": {"bmad-spec": 0.1, "bmad-build": 0.85, "unsure": 0.05},
                     "confidence": 0.85,
-                }
+                },
+                "matches": {"type": "noul", "noul": 0.9},
+                "fit": {
+                    "type": "score",
+                    "score": 1.8,
+                    "confidence": 0.9,
+                    "probabilities": {"1": 0.2, "2": 0.8},
+                },
             },
             "usage": {"input_tokens": 100, "output_tokens": 20},
         }
@@ -204,7 +211,14 @@ class RecommendCliTests(unittest.TestCase):
                     "choice": "bmad-spec",
                     "probabilities": {"bmad-spec": 0.9, "bmad-build": 0.05, "unsure": 0.05},
                     "confidence": 0.9,
-                }
+                },
+                "matches": {"type": "noul", "noul": 0.95},
+                "fit": {
+                    "type": "score",
+                    "score": 1.9,
+                    "confidence": 0.95,
+                    "probabilities": {"2": 1.0},
+                },
             },
             "usage": {"input_tokens": 50, "output_tokens": 10},
         }

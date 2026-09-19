@@ -55,7 +55,14 @@ the behavior:
   mode to gather comparison data against the unmodified flow.
 - `suggest` — the script returns a bounded advisory recommendation that the
   help flow assesses under its existing rules (one weighted vote, trivially
-  overridden).
+  overridden). The recommendation call batches three independent questions
+  over the same state: a `choice` pick among the candidates (with an explicit
+  `unsure` outcome), a `noul` yes/no gate on whether any candidate clearly
+  fits, and a `score` position on the ordered rubric ["no clear fit",
+  "partial fit", "clear fit"]. A recommendation surfaces only when all three
+  signals agree (pick is a real candidate, noul ≥ 0.50, score ≥ 1.50,
+  confidence ≥ 0.60 — thresholds provisional); any disagreement is a
+  conservative `uncertain` outcome and the ordinary path resumes.
 
 To enable:
 
